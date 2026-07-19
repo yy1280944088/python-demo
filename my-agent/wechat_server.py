@@ -449,24 +449,39 @@ def route_message(content: str, openid: str = "") -> str:
     # 提取城市
     cities = extract_cities(content)
 
-    if not cities:
-        return "暂不支持该指令，发送「帮助」查看可用功能～"
-
     # 多城市 → 直接对比
     if len(cities) >= 2:
         return get_multi_city(cities)
 
-    # 单城市 → 根据关键词决定查什么
-    city = cities[0]
+    # 判断是否包含功能关键词
+    has_forecast_kw = any(kw in content for kw in ["预报", "未来", "明天", "三天", "3天"])
+    has_index_kw = any(kw in content for kw in ["指数", "穿衣", "紫外线", "洗车", "运动"])
+    has_weather_kw = "天气" in content
 
-    if "预报" in content or "未来" in content or "明天" in content or "三天" in content or "3天" in content:
-        return get_forecast(city)
+    # 有城市名
+    if cities:
+        city = cities[0]
+        if has_forecast_kw:
+            return get_forecast(city)
+        if has_index_kw:
+            return get_life_index(city)
+        return get_weather(city)
 
-    if "指数" in content or "穿衣" in content or "紫外线" in content or "洗车" in content or "运动" in content:
-        return get_life_index(city)
+    # 无城市名：尝试用用户设置的城市
+    user_city = get_user_city(openid)
+    if user_city:
+        if has_forecast_kw:
+            return get_forecast(user_city)
+        if has_index_kw:
+            return get_life_index(user_city)
+        if has_weather_kw:
+            return get_weather(user_city)
 
-    # 默认查实况天气
-    return get_weather(city)
+    # 无城市且未设置：提示设置城市
+    if has_weather_kw or has_forecast_kw or has_index_kw:
+        return "你还没有设置城市哦～\n请先发送：设置城市 南京\n\n或者直接发送：南京天气"
+
+    return "暂不支持该指令，发送「帮助」查看可用功能～"
 
 
 # ============================================================
