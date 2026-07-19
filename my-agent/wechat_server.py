@@ -79,10 +79,13 @@ def _lookup_city(city: str):
     geo_url = f"https://{api_host}/geo/v2/city/lookup"
     resp = requests.get(geo_url, params={"location": city, "key": api_key}, timeout=10)
     if resp.status_code != 200:
-        return None, f"{city}：城市查询失败"
-    data = resp.json()
+        return None, f"{city}：城市查询失败（HTTP {resp.status_code}）"
+    try:
+        data = resp.json()
+    except ValueError:
+        return None, f"{city}：城市查询返回非JSON响应"
     if data.get("code") != "200":
-        return None, f"{city}：城市查询失败"
+        return None, f"{city}：城市查询失败（错误码 {data.get('code')}）"
 
     locations = data.get("location", [])
     if not locations:
@@ -98,7 +101,10 @@ def _fetch_weather_api(path: str, location_id: str):
     resp = requests.get(url, params={"location": location_id, "key": api_key}, timeout=10)
     if resp.status_code != 200:
         return None, f"HTTP {resp.status_code}"
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError:
+        return None, "非JSON响应"
     code = data.get("code")
     if code == "200":
         return data, None
@@ -186,10 +192,13 @@ def get_life_index(city: str) -> str:
             "location": location_id, "key": api_key, "type": "1,2,3,5"
         }, timeout=10)
         if resp.status_code != 200:
-            return f"{result}：指数查询失败"
-        data = resp.json()
+            return f"{result}：指数查询失败（HTTP {resp.status_code}）"
+        try:
+            data = resp.json()
+        except ValueError:
+            return f"{result}：指数查询返回非JSON响应"
         if data.get("code") != "200":
-            return f"{result}：指数查询失败"
+            return f"{result}：指数查询失败（错误码 {data.get('code')}）"
 
         lines = [f"🏃 {result} 生活指数", "━━━━━━━━━━━━"]
         for item in data.get("daily", []):
@@ -307,11 +316,14 @@ def get_travel_advice(city: str) -> str:
         # 根据当地日出日落时间判断白天/夜间
         from datetime import datetime
         now_time = datetime.now()
-        sunrise_str = today.get("sunrise", "")  # 格式如 2026-07-19T05:32+08:00
+        sunrise_str = today.get("sunrise", "")  # 格式如 "07:46" 或 "2026-07-19T07:46+08:00"
         sunset_str = today.get("sunset", "")
         try:
-            sunrise_t = datetime.strptime(sunrise_str[11:16], "%H:%M").time()
-            sunset_t = datetime.strptime(sunset_str[11:16], "%H:%M").time()
+            # 兼容两种格式：纯 HH:MM 或 ISO 格式（取 T 后的 HH:MM）
+            sunrise_hm = sunrise_str[11:16] if "T" in sunrise_str else sunrise_str[:5]
+            sunset_hm = sunset_str[11:16] if "T" in sunset_str else sunset_str[:5]
+            sunrise_t = datetime.strptime(sunrise_hm, "%H:%M").time()
+            sunset_t = datetime.strptime(sunset_hm, "%H:%M").time()
             is_daytime = sunrise_t <= now_time.time() <= sunset_t
             is_night = not is_daytime
         except (ValueError, IndexError):

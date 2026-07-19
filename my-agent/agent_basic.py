@@ -19,6 +19,12 @@ from openai import OpenAI
 # 加载 .env 文件中的环境变量（基于脚本所在目录，不受工作目录影响）
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+# 初始化 DeepSeek 客户端（模块级单例，避免重复创建）
+client = OpenAI(
+    base_url="https://api.deepseek.com/v1",
+    api_key=os.getenv("DEEPSEEK_API_KEY"),
+)
+
 # ============================================================
 # 第 1 步：定义工具（Tools）
 # ============================================================
@@ -131,11 +137,6 @@ def run_agent(user_message: str, max_turns: int = 10):
         user_message: 用户输入的消息
         max_turns: 最大循环次数（防止无限循环）
     """
-    client = OpenAI(
-        base_url="https://api.deepseek.com/v1",
-        api_key=os.getenv("DEEPSEEK_API_KEY"),
-    )
-
     # 初始化对话历史（messages 列表）
     messages = [
         {
