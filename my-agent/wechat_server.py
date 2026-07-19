@@ -304,11 +304,26 @@ def get_travel_advice(city: str) -> str:
         if uv:
             lines.append(f"☀️ 紫外线：{uv}")
 
-        # 生成出行建议
+        # 根据当地日出日落时间判断白天/夜间
+        from datetime import datetime
+        now_time = datetime.now()
+        sunrise_str = today.get("sunrise", "")  # 格式如 2026-07-19T05:32+08:00
+        sunset_str = today.get("sunset", "")
+        try:
+            sunrise_t = datetime.strptime(sunrise_str[11:16], "%H:%M").time()
+            sunset_t = datetime.strptime(sunset_str[11:16], "%H:%M").time()
+            is_daytime = sunrise_t <= now_time.time() <= sunset_t
+            is_night = not is_daytime
+        except (ValueError, IndexError):
+            # 解析失败时回退到默认时段
+            is_daytime = 6 <= now_time.hour <= 18
+            is_night = now_time.hour >= 20 or now_time.hour < 6
+
         lines.append("━━━━━━━━━━━━")
         lines.append("📋 出行建议：")
         advice = _generate_advice(weather_text, int(temp or 0), int(temp_min or 0),
-                                  int(humidity or 0), int(wind_scale or 0), int(uv or 0))
+                                  int(humidity or 0), int(wind_scale or 0), int(uv or 0),
+                                  is_daytime, is_night)
         lines.extend(advice)
 
         return "\n".join(lines)
@@ -319,36 +334,54 @@ def get_travel_advice(city: str) -> str:
 
 
 def _generate_advice(weather_text: str, temp: int, temp_min: int,
-                     humidity: int, wind_scale: int, uv: int) -> list:
-    """根据天气要素生成出行建议列表"""
+                     humidity: int, wind_scale: int, uv: int,
+                     is_daytime: bool, is_night: bool) -> list:
+    """根据天气要素 + 当地日出日落时段生成出行建议列表"""
     advice = []
 
-    # 降水
+    # 降水（全天有效）
     if any(w in weather_text for w in ["雨", "雪", "雷"]):
         advice.append("☔ 有降水，记得带伞，路面湿滑注意安全")
-    # 高温
+
+    # 高温（白天更相关）
     if temp >= 35:
-        advice.append("🥵 高温天气，减少户外活动，注意防暑补水")
-    elif temp >= 30:
+        if is_daytime:
+            advice.append("🥵 高温天气，减少户外活动，注意防暑补水")
+        else:
+            advice.append("🥵 夜间仍较闷热，注意通风降温")
+    elif temp >= 30 and is_daytime:
         advice.append("🌞 气温较高，外出注意防晒补水")
-    # 低温
+
+    # 低温（夜间/清晨更相关）
     if temp <= 0 or temp_min <= 0:
         advice.append("🧣 气温较低，注意防寒保暖")
     elif temp <= 10:
-        advice.append("🧥 天气偏凉，建议穿外套")
-    # 紫外线
-    if uv >= 7:
-        advice.append("🕶 紫外线强，建议涂防晒霜、戴帽子")
-    elif uv >= 4:
-        advice.append("🧢 紫外线中等，外出可适当防晒")
-    # 大风
+        if is_night:
+            advice.append("🧥 夜间偏凉，外出建议穿厚外套")
+        else:
+            advice.append("🧥 天气偏凉，建议穿外套")
+
+    # 紫外线（仅白天 6:00~18:00 有意义）
+    if is_daytime:
+        if uv >= 7:
+            advice.append("🕶 紫外线强，建议涂防晒霜、戴帽子")
+        elif uv >= 4:
+            advice.append("🧢 紫外线中等，外出可适当防晒")
+
+    # 大风（全天有效）
     if wind_scale >= 6:
         advice.append("💨 风力较大，注意高空坠物")
+
     # 湿度
     if humidity >= 85:
         advice.append("💧 湿度大，衣物不易晾干")
     elif humidity <= 30 and humidity > 0:
         advice.append("🏜 空气干燥，注意保湿补水")
+
+    # 夜间出行提醒
+    if is_night and not any(w in weather_text for w in ["雨", "雪", "雷"]):
+        advice.append("🌙 夜间出行注意安全，建议结伴而行")
+
     # 适宜
     if not advice:
         advice.append("✅ 天气适宜，适合出行活动")
