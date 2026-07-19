@@ -115,16 +115,19 @@ def _lookup_city(city: str):
 
 
 def _fetch_weather_api(path: str, location_id: str):
-    """通用天气 API 请求"""
+    """通用天气 API 请求，返回 (data, error_msg)"""
     api_key, api_host = _get_api_config()
     url = f"https://{api_host}{path}"
     resp = requests.get(url, params={"location": location_id, "key": api_key}, timeout=10)
     if resp.status_code != 200:
-        return None
+        return None, f"HTTP {resp.status_code}"
     data = resp.json()
-    if data.get("code") != "200":
-        return None
-    return data
+    code = data.get("code")
+    if code == "200":
+        return data, None
+    if code == "204":
+        return None, "204"
+    return None, f"错误码 {code}"
 
 
 # ============================================================
@@ -138,9 +141,9 @@ def get_weather(city: str) -> str:
         if location_id is None:
             return result
 
-        data = _fetch_weather_api("/v7/weather/now", location_id)
+        data, err = _fetch_weather_api("/v7/weather/now", location_id)
         if not data:
-            return f"{result}：天气查询失败"
+            return f"{result}：天气查询失败（{err}）"
 
         now = data["now"]
         return (
@@ -170,9 +173,9 @@ def get_forecast(city: str) -> str:
         if location_id is None:
             return result
 
-        data = _fetch_weather_api("/v7/weather/3d", location_id)
+        data, err = _fetch_weather_api("/v7/weather/3d", location_id)
         if not data:
-            return f"{result}：预报查询失败"
+            return f"{result}：预报查询失败（{err}）"
 
         lines = [f"📅 {result} 未来3天预报", "━━━━━━━━━━━━"]
         for day in data.get("daily", []):
@@ -232,9 +235,11 @@ def get_air_quality(city: str) -> str:
         if location_id is None:
             return result
 
-        data = _fetch_weather_api("/v7/air/now", location_id)
+        data, err = _fetch_weather_api("/v7/air/now", location_id)
         if not data:
-            return f"{result}：空气质量查询失败（可能不支持该地区）"
+            if err == "204":
+                return f"{result}：该地区暂无空气质量监测数据"
+            return f"{result}：空气质量查询失败（{err}）"
 
         now = data["now"]
         return (
@@ -266,9 +271,11 @@ def get_warning(city: str) -> str:
         if location_id is None:
             return result
 
-        data = _fetch_weather_api("/v7/warning/now", location_id)
+        data, err = _fetch_weather_api("/v7/warning/now", location_id)
         if not data:
-            return f"{result}：预警查询失败"
+            if err == "204":
+                return f"✅ {result} 当前无天气预警"
+            return f"{result}：预警查询失败（{err}）"
 
         warnings = data.get("warning", [])
         if not warnings:
@@ -300,7 +307,7 @@ def get_multi_city(cities: list) -> str:
             lines.append(f"  {city}：{result}")
             continue
 
-        data = _fetch_weather_api("/v7/weather/now", location_id)
+        data, err = _fetch_weather_api("/v7/weather/now", location_id)
         if not data:
             lines.append(f"  {result}：查询失败")
             continue
