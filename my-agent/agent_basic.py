@@ -12,11 +12,12 @@
 import json
 import os
 import requests
+from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# 加载 .env 文件中的环境变量
-load_dotenv()
+# 加载 .env 文件中的环境变量（基于脚本所在目录，不受工作目录影响）
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # ============================================================
 # 第 1 步：定义工具（Tools）
@@ -50,20 +51,28 @@ tools = [
 # 当 LLM 决定调用某个工具时，Agent 负责执行对应的 Python 函数
 
 def get_weather(city: str) -> str:
-    """通过和风天气 API 获取真实天气信息（需注册免费 Key）"""
+    """通过和风天气 API 获取当前实况天气（数据来自中国气象局观测站）"""
     api_key = os.getenv("QWEATHER_API_KEY")
-    if not api_key or api_key == "你的和风天气API_KEY":
+    api_host = os.getenv("QWEATHER_API_HOST")
+    if not api_key:
         return "错误：请先在 .env 文件中配置 QWEATHER_API_KEY"
+    if not api_host:
+        return "错误：请先在 .env 文件中配置 QWEATHER_API_HOST"
 
     try:
         # 第 1 步：通过城市名查询 Location ID
-        geo_url = "https://geoapi.qweather.com/v2/city/lookup"
+        geo_url = f"https://{api_host}/geo/v2/city/lookup"
         geo_params = {"location": city, "key": api_key}
         geo_resp = requests.get(geo_url, params=geo_params, timeout=10)
-        geo_data = geo_resp.json()
+        if geo_resp.status_code != 200:
+            return f"{city}：城市查询失败（HTTP {geo_resp.status_code}）: {geo_resp.text[:200]}"
+        try:
+            geo_data = geo_resp.json()
+        except ValueError:
+            return f"{city}：城市查询返回非JSON响应: {geo_resp.text[:200]}"
 
         if geo_data.get("code") != "200":
-            return f"{city}：城市查询失败（{geo_data.get('code')}）"
+            return f"{city}：城市查询失败（错误码 {geo_data.get('code')}）"
 
         locations = geo_data.get("location", [])
         if not locations:
@@ -72,24 +81,30 @@ def get_weather(city: str) -> str:
         location_id = locations[0]["id"]
         location_name = locations[0]["name"]
 
-        # 第 2 步：用 Location ID 查询天气预报（3天）
-        weather_url = "https://devapi.qweather.com/v7/weather/3d"
+        # 第 2 步：查询当前实况天气
+        weather_url = f"https://{api_host}/v7/weather/now"
         weather_params = {"location": location_id, "key": api_key}
         weather_resp = requests.get(weather_url, params=weather_params, timeout=10)
-        weather_data = weather_resp.json()
+        if weather_resp.status_code != 200:
+            return f"{location_name}：天气查询失败（HTTP {weather_resp.status_code}）: {weather_resp.text[:200]}"
+        try:
+            weather_data = weather_resp.json()
+        except ValueError:
+            return f"{location_name}：天气查询返回非JSON响应: {weather_resp.text[:200]}"
 
         if weather_data.get("code") != "200":
-            return f"{location_name}：天气查询失败（{weather_data.get('code')}）"
+            return f"{location_name}：天气查询失败（错误码 {weather_data.get('code')}）"
 
-        # 拼接 3 天预报信息
-        lines = [f"{location_name} 未来 3 天天气预报："]
-        for day in weather_data["daily"]:
-            lines.append(
-                f"  {day['fxDate']}：{day['textDay']}，"
-                f"{day['tempMin']}~{day['tempMax']}°C，"
-                f"湿度 {day['humidity']}%，"
-                f"{day['windDirDay']}风 {day['windScaleDay']}级"
-            )
+        now = weather_data["now"]
+        lines = [
+            f"{location_name} 当前实况天气：",
+            f"  天气状况：{now['text']}",
+            f"  温度：{now['temp']}°C（体感 {now['feelsLike']}°C）",
+            f"  湿度：{now['humidity']}%",
+            f"  风向：{now['windDir']} {now['windScale']}级",
+            f"  降水量：{now['precip']}mm",
+            f"  观测时间：{now['obsTime']}",
+        ]
         return "\n".join(lines)
     except requests.exceptions.Timeout:
         return f"{city}：查询超时，请稍后再试"
@@ -187,8 +202,15 @@ def run_agent(user_message: str, max_turns: int = 10):
 
 
 # ============================================================
-# 第 4 步：运行测试
+# 第 4 步：运行 Agent（交互式对话）
 # ============================================================
 if __name__ == "__main__":
-    # 测试 1：查询单个城市天气
-    run_agent("北京今天天气怎么样？")
+    print("🌤 天气查询助手已启动（输入 q 退出）")
+    while True:
+        user_input = input("\n🧑 请输入你的问题: ").strip()
+        if user_input.lower() in ("q", "quit", "exit"):
+            print("👋 再见！")
+            break
+        if not user_input:
+            continue
+        run_agent(user_input)
