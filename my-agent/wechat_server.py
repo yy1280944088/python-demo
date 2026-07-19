@@ -229,16 +229,51 @@ def get_multi_city(cities: list) -> str:
 
 # ============================================================
 # 消息路由：解析用户意图
+# 规则：输入包含多个城市 → 多城对比；一个城市 → 天气/预报/指数
 # ============================================================
 
-def parse_city(text: str) -> str:
-    """从用户消息中提取城市名"""
-    keywords = ["天气", "预报", "指数", "查询", "查一下",
-                "怎么样", "如何", "帮我", "请", "看看", "的"]
-    for kw in keywords:
-        text = text.replace(kw, "")
-    text = re.sub(r"[？?！!。，,\s]", "", text)
-    return text.strip()
+MAJOR_CITIES = [
+    "北京", "上海", "天津", "重庆",
+    "哈尔滨", "长春", "沈阳", "呼和浩特", "石家庄", "太原",
+    "济南", "郑州", "西安", "兰州", "银川", "西宁", "乌鲁木齐",
+    "成都", "贵阳", "昆明", "拉萨", "武汉", "长沙", "南昌",
+    "合肥", "南京", "杭州", "福州", "广州", "南宁", "海口",
+    "台北", "香港", "澳门",
+    "深圳", "厦门", "青岛", "大连", "宁波", "苏州", "无锡",
+    "珠海", "三亚", "桂林", "丽江", "洛阳", "烟台", "温州",
+    "常州", "徐州", "泉州", "佛山", "东莞", "中山", "惠州",
+    "绍兴", "嘉兴", "金华", "台州", "芜湖", "潍坊", "威海",
+    "秦皇岛", "唐山", "包头", "鄂尔多斯", "汉中", "延安",
+    "日喀则", "那曲", "昌都", "林芝",
+]
+
+CITY_PATTERN = re.compile("|".join(sorted(MAJOR_CITIES, key=len, reverse=True)))
+
+
+def extract_cities(text: str) -> list:
+    """从用户消息中提取城市名列表"""
+    # 策略1：按分隔符拆分（空格、逗号、顿号、分号）
+    cleaned = re.sub(
+        r"(帮我|请|对比|比较|一下|看看|查一下|查询|天气|预报|指数|怎么样|如何|的|和|与|跟|还有)",
+        "", text
+    )
+    parts = [c.strip() for c in re.split(r"[\s,，、;；]+", cleaned) if c.strip()]
+    if len(parts) >= 2:
+        return parts
+
+    # 策略2：用已知城市名正则匹配（处理无分隔符的情况，如"上海拉萨"）
+    found = CITY_PATTERN.findall(text)
+    unique = list(dict.fromkeys(found))
+    if unique:
+        return unique
+
+    # 策略3：去除关键词后剩余部分当作单个城市名
+    city = cleaned.strip()
+    city = re.sub(r"[？?！!。，,\s]", "", city)
+    if city:
+        return [city]
+
+    return []
 
 
 def route_message(content: str, openid: str = "") -> str:
@@ -252,43 +287,32 @@ def route_message(content: str, openid: str = "") -> str:
             "【实况天气】北京天气\n"
             "【3天预报】北京预报\n"
             "【生活指数】北京指数\n"
-            "【多城对比】北京 上海 广州 天气\n"
+            "【多城对比】上海 拉萨\n"
             "━━━━━━━━━━━━\n"
             f"每人每天限查{DAILY_LIMIT}次"
         )
 
-    # 多城市对比：包含空格分隔的多个城市
-    if " " in content and ("天气" in content or "对比" in content):
-        cities_text = content.replace("天气", "").replace("对比", "").replace("比较", "")
-        cities = [c.strip() for c in re.split(r"[\s,，、]+", cities_text) if c.strip()]
-        if len(cities) >= 2:
-            return get_multi_city(cities)
+    # 提取城市
+    cities = extract_cities(content)
 
-    # 预报
+    if not cities:
+        return "暂不支持该指令，发送「帮助」查看可用功能～"
+
+    # 多城市 → 直接对比
+    if len(cities) >= 2:
+        return get_multi_city(cities)
+
+    # 单城市 → 根据关键词决定查什么
+    city = cities[0]
+
     if "预报" in content or "未来" in content or "明天" in content or "三天" in content or "3天" in content:
-        city = parse_city(content)
-        return get_forecast(city) if city else "请发送：城市名+预报，例如：北京预报"
+        return get_forecast(city)
 
-    # 生活指数
     if "指数" in content or "穿衣" in content or "紫外线" in content or "洗车" in content or "运动" in content:
-        city = parse_city(content)
-        return get_life_index(city) if city else "请发送：城市名+指数，例如：北京指数"
+        return get_life_index(city)
 
-    # 实况天气
-    if "天气" in content:
-        city = parse_city(content)
-        return get_weather(city) if city else "请发送：城市名+天气，例如：北京天气"
-
-    # 尝试当作城市名直接查天气（如用户只发"北京"）
-    city = parse_city(content)
-    if city and len(city) <= 10:
-        # 看看是不是一个合法城市名（尝试查询）
-        location_id, result = _lookup_city(city)
-        if location_id:
-            return get_weather(city)
-
-    # 兜底：无法识别的指令
-    return "暂不支持该指令，发送「帮助」查看可用功能～"
+    # 默认查实况天气
+    return get_weather(city)
 
 
 # ============================================================
@@ -342,7 +366,7 @@ def wechat():
                 "🌤【实况天气】北京天气\n"
                 "📅【3天预报】北京预报\n"
                 "🏃【生活指数】北京指数\n"
-                "🌍【多城对比】北京 上海 广州 天气\n\n"
+                "🌍【多城对比】上海 拉萨\n\n"
                 "━━━━━━━━━━━━\n"
                 f"每人每天限查{DAILY_LIMIT}次\n"
                 "发送「帮助」随时查看指令"
