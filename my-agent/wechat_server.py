@@ -1,17 +1,14 @@
 """
-微信公众号天气查询服务（全功能版）
+微信公众号天气查询服务
 ==================================
 功能：
   1. 实况天气查询（发送：北京天气）
   2. 未来3天预报（发送：北京预报）
   3. 生活指数（发送：北京指数）
-  4. 空气质量（发送：北京空气）
-  5. 天气预警（发送：北京预警）
-  6. 多城市对比（发送：北京 上海 广州 天气）
-  7. AI 智能对话（发送任意非天气指令，自动调用 DeepSeek）
+  4. 多城市对比（发送：北京 上海 广州 天气）
 
 依赖安装：
-    pip install flask requests python-dotenv openai
+    pip install flask requests python-dotenv
 
 运行：
     python wechat_server.py
@@ -28,7 +25,6 @@ from pathlib import Path
 import requests
 from flask import Flask, request, make_response
 from dotenv import load_dotenv
-from openai import OpenAI
 
 # 加载 .env 文件中的环境变量（基于脚本所在目录，不受工作目录影响）
 load_dotenv(Path(__file__).resolve().parent / ".env")
@@ -38,16 +34,11 @@ app = Flask(__name__)
 # 公众号后台配置的 Token
 WECHAT_TOKEN = os.getenv("WECHAT_TOKEN", "my_weather_bot")
 
-# 是否开启 AI 对话（非天气指令时调用 DeepSeek）
-AI_CHAT_ENABLED = os.getenv("AI_CHAT_ENABLED", "true").lower() == "true"
-
 # ============================================================
-# 频率限制：每人每天最多查询 N 次（天气）/ AI 对话 M 次
+# 频率限制：每人每天最多查询 N 次
 # ============================================================
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "10"))
-AI_DAILY_LIMIT = int(os.getenv("AI_DAILY_LIMIT", "3"))  # AI 对话单独限额
-usage_record = {}   # 天气+通用计数
-ai_usage_record = {}  # AI 对话单独计数
+usage_record = {}
 
 
 def check_rate_limit(openid: str) -> bool:
@@ -65,21 +56,6 @@ def check_rate_limit(openid: str) -> bool:
     record["count"] += 1
     return True
 
-
-def check_ai_rate_limit(openid: str) -> bool:
-    """检查用户 AI 对话是否超过每日限额"""
-    today = date.today().isoformat()
-    record = ai_usage_record.get(openid)
-
-    if record is None or record["date"] != today:
-        ai_usage_record[openid] = {"date": today, "count": 1}
-        return True
-
-    if record["count"] >= AI_DAILY_LIMIT:
-        return False
-
-    record["count"] += 1
-    return True
 
 
 # ============================================================
@@ -225,77 +201,7 @@ def get_life_index(city: str) -> str:
 
 
 # ============================================================
-# 功能 4：空气质量
-# ============================================================
-
-def get_air_quality(city: str) -> str:
-    """获取空气质量"""
-    try:
-        location_id, result = _lookup_city(city)
-        if location_id is None:
-            return result
-
-        data, err = _fetch_weather_api("/v7/air/now", location_id)
-        if not data:
-            if err == "204":
-                return f"{result}：该地区暂无空气质量监测数据"
-            return f"{result}：空气质量查询失败（{err}）"
-
-        now = data["now"]
-        return (
-            f"🌬 {result} 空气质量\n"
-            f"━━━━━━━━━━━━\n"
-            f"AQI：{now['aqi']}（{now['category']}）\n"
-            f"PM2.5：{now['pm2p5']}\n"
-            f"PM10：{now['pm10']}\n"
-            f"NO₂：{now['no2']}\n"
-            f"SO₂：{now['so2']}\n"
-            f"O₃：{now['o3']}\n"
-            f"CO：{now['co']}\n"
-            f"时间：{now['pubTime']}"
-        )
-    except requests.exceptions.Timeout:
-        return f"{city}：查询超时"
-    except Exception as e:
-        return f"查询出错：{e}"
-
-
-# ============================================================
-# 功能 5：天气预警
-# ============================================================
-
-def get_warning(city: str) -> str:
-    """获取天气预警"""
-    try:
-        location_id, result = _lookup_city(city)
-        if location_id is None:
-            return result
-
-        data, err = _fetch_weather_api("/v7/warning/now", location_id)
-        if not data:
-            if err == "204":
-                return f"✅ {result} 当前无天气预警"
-            return f"{result}：预警查询失败（{err}）"
-
-        warnings = data.get("warning", [])
-        if not warnings:
-            return f"✅ {result} 当前无天气预警"
-
-        lines = [f"⚠️ {result} 天气预警", "━━━━━━━━━━━━"]
-        for w in warnings:
-            lines.append(
-                f"【{w['typeName']}{w['level']}级】\n"
-                f"  {w['text'][:150]}"
-            )
-        return "\n".join(lines)
-    except requests.exceptions.Timeout:
-        return f"{city}：查询超时"
-    except Exception as e:
-        return f"查询出错：{e}"
-
-
-# ============================================================
-# 功能 6：多城市对比
+# 功能 4：多城市对比
 # ============================================================
 
 def get_multi_city(cities: list) -> str:
@@ -320,42 +226,6 @@ def get_multi_city(cities: list) -> str:
     return "\n".join(lines)
 
 
-# ============================================================
-# 功能 7：AI 智能对话（DeepSeek）
-# ============================================================
-
-def ai_chat(user_message: str, openid: str = "") -> str:
-    """调用 DeepSeek 进行智能对话"""
-    if not AI_CHAT_ENABLED:
-        return "AI 对话功能未开启，发送「帮助」查看可用指令。"
-
-    # AI 对话单独限频
-    if openid and not check_ai_rate_limit(openid):
-        return f"今日 AI 对话次数已达上限（{AI_DAILY_LIMIT}次/天），天气查询不受影响～"
-
-    try:
-        client = OpenAI(
-            base_url="https://api.deepseek.com/v1",
-            api_key=os.getenv("DEEPSEEK_API_KEY"),
-        )
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是一个简洁的天气助手，也可以回答用户的一般问题。"
-                        "回答请简短（不超过200字），使用中文。"
-                    ),
-                },
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=500,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"AI 对话出错：{e}"
-
 
 # ============================================================
 # 消息路由：解析用户意图
@@ -363,8 +233,8 @@ def ai_chat(user_message: str, openid: str = "") -> str:
 
 def parse_city(text: str) -> str:
     """从用户消息中提取城市名"""
-    keywords = ["天气", "预报", "指数", "空气", "预警", "查询", "查一下",
-                "怎么样", "如何", "帮我", "请", "看看", "的", "质量"]
+    keywords = ["天气", "预报", "指数", "查询", "查一下",
+                "怎么样", "如何", "帮我", "请", "看看", "的"]
     for kw in keywords:
         text = text.replace(kw, "")
     text = re.sub(r"[？?！!。，,\s]", "", text)
@@ -382,13 +252,9 @@ def route_message(content: str, openid: str = "") -> str:
             "【实况天气】北京天气\n"
             "【3天预报】北京预报\n"
             "【生活指数】北京指数\n"
-            "【空气质量】北京空气\n"
-            "【天气预警】北京预警\n"
             "【多城对比】北京 上海 广州 天气\n"
-            "【AI对话】直接发任意问题\n"
             "━━━━━━━━━━━━\n"
-            f"每人每天限查{DAILY_LIMIT}次（天气）\n"
-            f"AI对话限{AI_DAILY_LIMIT}次/天"
+            f"每人每天限查{DAILY_LIMIT}次"
         )
 
     # 多城市对比：包含空格分隔的多个城市
@@ -408,16 +274,6 @@ def route_message(content: str, openid: str = "") -> str:
         city = parse_city(content)
         return get_life_index(city) if city else "请发送：城市名+指数，例如：北京指数"
 
-    # 空气质量
-    if "空气" in content or "aqi" in content.lower() or "pm2.5" in content.lower() or "雾霾" in content:
-        city = parse_city(content)
-        return get_air_quality(city) if city else "请发送：城市名+空气，例如：北京空气"
-
-    # 天气预警
-    if "预警" in content or "警报" in content:
-        city = parse_city(content)
-        return get_warning(city) if city else "请发送：城市名+预警，例如：北京预警"
-
     # 实况天气
     if "天气" in content:
         city = parse_city(content)
@@ -431,8 +287,8 @@ def route_message(content: str, openid: str = "") -> str:
         if location_id:
             return get_weather(city)
 
-    # 兜底：AI 对话
-    return ai_chat(content, openid)
+    # 兜底：无法识别的指令
+    return "暂不支持该指令，发送「帮助」查看可用功能～"
 
 
 # ============================================================
@@ -486,12 +342,9 @@ def wechat():
                 "🌤【实况天气】北京天气\n"
                 "📅【3天预报】北京预报\n"
                 "🏃【生活指数】北京指数\n"
-                "🌬【空气质量】北京空气\n"
-                "⚠️【天气预警】北京预警\n"
-                "🌍【多城对比】北京 上海 广州 天气\n"
-                "🤖【AI对话】直接发任意问题\n\n"
+                "🌍【多城对比】北京 上海 广州 天气\n\n"
                 "━━━━━━━━━━━━\n"
-                f"每人每天：天气{DAILY_LIMIT}次 / AI对话{AI_DAILY_LIMIT}次\n"
+                f"每人每天限查{DAILY_LIMIT}次\n"
                 "发送「帮助」随时查看指令"
             )
             reply_xml = build_text_reply(from_user, to_user, reply_content)
@@ -532,10 +385,9 @@ def wechat():
 # ============================================================
 
 if __name__ == "__main__":
-    print("🚀 微信公众号天气服务已启动（全功能版）！")
+    print("🚀 微信公众号天气服务已启动！")
     print(f"   监听端口：80")
     print(f"   接口地址：http://你的服务器IP/wechat")
     print(f"   Token：{WECHAT_TOKEN}")
-    print(f"   AI 对话：{'开启' if AI_CHAT_ENABLED else '关闭'}")
-    print(f"   每日限额：天气 {DAILY_LIMIT} 次/人，AI 对话 {AI_DAILY_LIMIT} 次/人")
+    print(f"   每日限额：{DAILY_LIMIT} 次/人")
     app.run(host="0.0.0.0", port=80)
