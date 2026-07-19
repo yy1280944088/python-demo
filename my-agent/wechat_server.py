@@ -16,6 +16,7 @@
 
 import os
 import re
+import json
 import hashlib
 import time
 import xml.etree.ElementTree as ET
@@ -228,6 +229,134 @@ def get_multi_city(cities: list) -> str:
 
 
 # ============================================================
+# 用户城市设置（持久化到 JSON 文件）
+# ============================================================
+
+USERS_FILE = Path(__file__).resolve().parent / "user_cities.json"
+
+
+def _load_user_cities() -> dict:
+    if USERS_FILE.exists():
+        try:
+            return json.loads(USERS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, IOError):
+            return {}
+    return {}
+
+
+def _save_user_cities(data: dict):
+    USERS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def set_user_city(openid: str, city: str):
+    users = _load_user_cities()
+    users[openid] = city
+    _save_user_cities(users)
+
+
+def get_user_city(openid: str) -> str:
+    return _load_user_cities().get(openid, "")
+
+
+# ============================================================
+# 功能 5：出行建议（天气简报 + 智能建议）
+# ============================================================
+
+def get_travel_advice(city: str) -> str:
+    """获取天气简报 + 出行建议"""
+    try:
+        location_id, city_name = _lookup_city(city)
+        if location_id is None:
+            return city_name
+
+        # 获取实况
+        now_data, err1 = _fetch_weather_api("/v7/weather/now", location_id)
+        # 获取今日预报
+        forecast_data, err2 = _fetch_weather_api("/v7/weather/3d", location_id)
+
+        if not now_data and not forecast_data:
+            return f"{city_name}：天气查询失败"
+
+        now = now_data.get("now", {}) if now_data else {}
+        today = forecast_data.get("daily", [{}])[0] if forecast_data else {}
+
+        # 天气简报
+        weather_text = now.get("text", "") or today.get("textDay", "未知")
+        temp = now.get("temp", "") or today.get("tempMax", "")
+        feels_like = now.get("feelsLike", "")
+        temp_min = today.get("tempMin", "")
+        temp_max = today.get("tempMax", "")
+        humidity = now.get("humidity", "")
+        wind_dir = now.get("windDir", "") or today.get("windDirDay", "")
+        wind_scale = now.get("windScale", "") or today.get("windScaleDay", "")
+        uv = today.get("uvIndex", "")
+
+        temp_range = f"{temp_min}~{temp_max}°C" if temp_min and temp_max else f"{temp}°C"
+
+        lines = [
+            f"🚶 {city_name} 出行建议",
+            "━━━━━━━━━━━━",
+            f"🌤 天气：{weather_text}",
+            f"🌡 温度：{temp_range}（当前 {temp}°C，体感 {feels_like}°C）",
+            f"💨 风力：{wind_dir} {wind_scale}级",
+            f"💧 湿度：{humidity}%",
+        ]
+        if uv:
+            lines.append(f"☀️ 紫外线：{uv}")
+
+        # 生成出行建议
+        lines.append("━━━━━━━━━━━━")
+        lines.append("📋 出行建议：")
+        advice = _generate_advice(weather_text, int(temp or 0), int(temp_min or 0),
+                                  int(humidity or 0), int(wind_scale or 0), int(uv or 0))
+        lines.extend(advice)
+
+        return "\n".join(lines)
+    except requests.exceptions.Timeout:
+        return f"{city}：查询超时，请稍后再试"
+    except Exception as e:
+        return f"查询出错：{e}"
+
+
+def _generate_advice(weather_text: str, temp: int, temp_min: int,
+                     humidity: int, wind_scale: int, uv: int) -> list:
+    """根据天气要素生成出行建议列表"""
+    advice = []
+
+    # 降水
+    if any(w in weather_text for w in ["雨", "雪", "雷"]):
+        advice.append("☔ 有降水，记得带伞，路面湿滑注意安全")
+    # 高温
+    if temp >= 35:
+        advice.append("🥵 高温天气，减少户外活动，注意防暑补水")
+    elif temp >= 30:
+        advice.append("🌞 气温较高，外出注意防晒补水")
+    # 低温
+    if temp <= 0 or temp_min <= 0:
+        advice.append("🧣 气温较低，注意防寒保暖")
+    elif temp <= 10:
+        advice.append("🧥 天气偏凉，建议穿外套")
+    # 紫外线
+    if uv >= 7:
+        advice.append("🕶 紫外线强，建议涂防晒霜、戴帽子")
+    elif uv >= 4:
+        advice.append("🧢 紫外线中等，外出可适当防晒")
+    # 大风
+    if wind_scale >= 6:
+        advice.append("💨 风力较大，注意高空坠物")
+    # 湿度
+    if humidity >= 85:
+        advice.append("💧 湿度大，衣物不易晾干")
+    elif humidity <= 30 and humidity > 0:
+        advice.append("🏜 空气干燥，注意保湿补水")
+    # 适宜
+    if not advice:
+        advice.append("✅ 天气适宜，适合出行活动")
+
+    return advice
+
+
+# ============================================================
 # 消息路由：解析用户意图
 # 规则：输入包含多个城市 → 多城对比；一个城市 → 天气/预报/指数
 # ============================================================
@@ -288,9 +417,34 @@ def route_message(content: str, openid: str = "") -> str:
             "【3天预报】北京预报\n"
             "【生活指数】北京指数\n"
             "【多城对比】上海 拉萨\n"
+            "【出行建议】出行建议\n"
+            "【设置城市】设置城市 南京\n"
             "━━━━━━━━━━━━\n"
             f"每人每天限查{DAILY_LIMIT}次"
         )
+
+    # 设置城市
+    if content.startswith("设置城市"):
+        city = content.replace("设置城市", "").strip()
+        city = re.sub(r"[\s：:，,。]", "", city)
+        if not city:
+            return "请发送：设置城市 + 城市名\n例如：设置城市 南京"
+        location_id, city_name = _lookup_city(city)
+        if not location_id:
+            return f"未找到「{city}」这个城市，请检查城市名"
+        set_user_city(openid, city_name)
+        return f"✅ 已设置城市：{city_name}\n发送「出行建议」即可获取天气+出行建议"
+
+    # 出行建议
+    if "出行" in content or "建议" in content:
+        # 优先从消息中提取城市，否则用用户设置的城市
+        cities = extract_cities(content.replace("出行建议", "").replace("出行", "").replace("建议", ""))
+        if cities:
+            return get_travel_advice(cities[0])
+        user_city = get_user_city(openid)
+        if user_city:
+            return get_travel_advice(user_city)
+        return "你还没有设置城市哦～\n请先发送：设置城市 南京\n\n或者直接发送：南京出行建议"
 
     # 提取城市
     cities = extract_cities(content)
@@ -366,7 +520,8 @@ def wechat():
                 "🌤【实况天气】北京天气\n"
                 "📅【3天预报】北京预报\n"
                 "🏃【生活指数】北京指数\n"
-                "🌍【多城对比】上海 拉萨\n\n"
+                "🌍【多城对比】上海 拉萨\n"
+                "🚶【出行建议】设置城市 南京 后发送「出行建议」\n\n"
                 "━━━━━━━━━━━━\n"
                 f"每人每天限查{DAILY_LIMIT}次\n"
                 "发送「帮助」随时查看指令"

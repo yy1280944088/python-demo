@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .idea/
 output.txt
+user_cities.json
